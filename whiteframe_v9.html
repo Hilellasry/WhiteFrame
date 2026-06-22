@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>WhiteFrame v9</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:#111;-webkit-tap-highlight-color:transparent}
+  @keyframes spin   {to{transform:rotate(360deg)}}
+  @keyframes cardIn {from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  @keyframes pulse  {0%,100%{opacity:.4}50%{opacity:1}}
+  @keyframes fadeIn {from{opacity:0}to{opacity:1}}
+  ::-webkit-scrollbar{width:3px;height:3px;background:#111}
+  ::-webkit-scrollbar-thumb{background:#333;border-radius:2px}
+  input[type=range]{-webkit-appearance:none;appearance:none;height:3px;border-radius:99px;outline:none;cursor:pointer;background:#2a2a2a}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#EDE8DE;cursor:pointer;box-shadow:0 0 0 3px #111,0 0 0 4.5px #444}
+  input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:#EDE8DE;border:none;cursor:pointer}
+  input[type=color]{-webkit-appearance:none;border:none;padding:0;cursor:pointer;background:none}
+  input[type=color]::-webkit-color-swatch-wrapper{padding:0}
+  input[type=color]::-webkit-color-swatch{border:none;border-radius:5px}
+  input[type=text],input[type=number]{font-family:'DM Mono',monospace;background:#0D0D0D;border:1px solid rgba(255,255,255,.13);color:#EDE8DE;border-radius:6px;padding:6px 8px;font-size:11px;outline:none}
+  input[type=text]:focus,input[type=number]:focus{border-color:rgba(255,255,255,.3)}
+  input[type=number]::-webkit-inner-spin-button{opacity:.4}
+  button{font-family:'DM Mono',monospace;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  button:active{opacity:.7}
+  .ctrl-scroll{display:flex;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:0 16px}
+  .ctrl-scroll::-webkit-scrollbar{display:none}
+  @media(min-width:720px){.ctrl-scroll{padding:0 24px;flex-wrap:wrap;overflow:visible}}
+  .ctrl-item{display:flex;flex-direction:column;gap:8px;padding:12px 20px 12px 0;flex-shrink:0}
+  .ctrl-div{width:1px;background:rgba(255,255,255,.07);align-self:stretch;margin:10px 0;flex-shrink:0}
+  .grid{display:grid;gap:8px;grid-template-columns:1fr}
+  @media(min-width:540px){.grid{grid-template-columns:repeat(2,1fr)}}
+  @media(min-width:900px){.grid{grid-template-columns:repeat(3,1fr)}}
+  .footer{display:flex;flex-direction:column;gap:8px;padding:12px 16px;border-top:1px solid rgba(255,255,255,.07);background:#0D0D0D;flex-shrink:0}
+  @media(min-width:600px){.footer{flex-direction:row;align-items:center;padding:12px 24px}}
+  .footer-r{display:flex;align-items:center;gap:10px}
+  @media(min-width:600px){.footer-r{margin-left:auto}}
+  .lightbox{position:fixed;inset:0;background:rgba(0,0,0,.86);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:50;animation:fadeIn 140ms ease-out;padding:24px;cursor:zoom-out}
+</style>
+</head>
+<body>
+<div id="root" style="height:100%"></div>
+<script type="module">
+import { useState, useEffect, useRef, useCallback, useReducer } from 'https://esm.sh/react@18';
+import { createRoot } from 'https://esm.sh/react-dom@18/client';
+import { createElement as h } from 'https://esm.sh/react@18';
+
+// ─── Shared engine code (pure functions; runs on main thread AND in worker) ──
+const ENGINE = `
+function seededRnd(seed){var s=Math.round(seed*233280)%233280;if(s<0)s+=233280;return function(){s=(s*9301+49297)%233280;return s/233280;};}
+function hex2a(hex,alpha){return hex+Math.round(alpha*255).toString(16).padStart(2,'0');}
+function hexToRgb(hex){return[parseInt(hex.slice(1,3),16),parseInt(hex.slice(3,5),16),parseInt(hex.slice(5,7),16)];}
+function rgbToHex(r,g,b){return'#'+[r,g,b].map(function(v){return Math.round(Math.max(0,Math.min(255,v))).toString(16).padStart(2,'0');}).join('');}
+function mixHex(h1,h2,f){var a=hexToRgb(h1),b=hexToRgb(h2);return rgbToHex(a[0]+(b[0]-a[0])*f,a[1]+(b[1]-a[1])*f,a[2]+(b[2]-a[2])*f);}
+function rampPalette(cols){
+  cols=cols.filter(function(c){return/^#[0-9a-fA-F]{6}$/.test(c);});
+  if(!cols.length)return['#1a1a3a','#2a1a4a','#3a2a5a','#4a3a6a','#5a4a7a','#6a5a8a'];
+  if(cols.length>=6)return cols.slice(0,6);
+  var out=[],n=6;
+  for(var i=0;i<n;i++){var t=i/(n-1)*(cols.length-1),a=Math.floor(t),b=Math.min(cols.length-1,a+1),f=t-a;out.push(mixHex(cols[a],cols[b],f));}
+  return out;
+}
+function colorDist(a,b){return Math.sqrt(Math.pow(a[0]-b[0],2)+Math.pow(a[1]-b[1],2)+Math.pow(a[2]-b[2],2));}
+function kMeans(pixels,k,rnd){
+  rnd=rnd||Math.random;
+  var centers=[];
+  for(var ii=0;ii<k;ii++)centers.push(pixels[Math.floor(rnd()*pixels.length)].slice());
+  for(var iter=0;iter<12;iter++){
+    var clusters=[];for(var ci=0;ci<k;ci++)clusters.push([]);
+    for(var pi=0;pi<pixels.length;pi++){var p=pixels[pi],best=0,bd=Infinity;for(var ki=0;ki<k;ki++){var d=colorDist(p,centers[ki]);if(d<bd){bd=d;best=ki;}}clusters[best].push(p);}
+    for(var ci2=0;ci2<k;ci2++){if(!clusters[ci2].length)continue;var avg=[0,0,0];for(var pj=0;pj<clusters[ci2].length;pj++){avg[0]+=clusters[ci2][pj][0];avg[1]+=clusters[ci2][pj][1];avg[2]+=clusters[ci2][pj][2];}centers[ci2]=avg.map(function(v){return v/clusters[ci2].length;});}
+  }
+  return centers.map(function(c){return c.map(function(v){return Math.round(v);});});
+}
+function boostColor(hex,amount){
+  var rgb=hexToRgb(hex),r=rgb[0]/255,g=rgb[1]/255,b=rgb[2]/255;
+  var max=Math.max(r,g,b),min=Math.min(r,g,b),l=(max+min)/2;
+  if(max===min)return hex;
+  var d=max-min,s=l>0.5?d/(2-max-min):d/(max+min);s=Math.min(1,s*amount);
+  l=Math.max(0.06,Math.min(0.82,l));
+  function h2r(p,q,t){if(t<0)t+=1;if(t>1)t-=1;if(t<1/6)return p+(q-p)*6*t;if(t<0.5)return q;if(t<2/3)return p+(q-p)*(2/3-t)*6;return p;}
+  var hh;switch(max){case r:hh=(g-b)/d+(g<b?6:0);break;case g:hh=(b-r)/d+2;break;default:hh=(r-g)/d+4;}hh/=6;
+  var rr,gg,bb;
+  if(s===0){rr=gg=bb=l;}else{var q=l<0.5?l*(1+s):l+s-l*s,pp=2*l-q;rr=h2r(pp,q,hh+1/3);gg=h2r(pp,q,hh);bb=h2r(pp,q,hh-1/3);}
+  return rgbToHex(rr*255,gg*255,bb*255);
+}
+function renderBlob(ctx,w,h,colors,rnd){
+  ctx.fillStyle=colors[0];ctx.fillRect(0,0,w,h);
+  var pos=[[rnd()*0.55*w,rnd()*0.55*h],[w*(0.45+rnd()*0.45),h*(0.1+rnd()*0.45)],[w*(0.05+rnd()*0.35),h*(0.45+rnd()*0.45)],[w*(0.55+rnd()*0.4),h*(0.55+rnd()*0.35)],[w*(0.2+rnd()*0.4),h*(0.2+rnd()*0.4)]];
+  for(var i=0;i<pos.length;i++){
+    var cx=pos[i][0],cy=pos[i][1],col=colors[(i+1)%colors.length];
+    var r1=Math.sqrt(w*w+h*h)*(0.45+rnd()*0.3);
+    var g1=ctx.createRadialGradient(cx,cy,0,cx,cy,r1);
+    g1.addColorStop(0,hex2a(col,0.88));g1.addColorStop(0.25,hex2a(col,0.58));g1.addColorStop(0.6,hex2a(col,0.18));g1.addColorStop(1,hex2a(col,0));
+    ctx.fillStyle=g1;ctx.fillRect(0,0,w,h);
+    var g2=ctx.createRadialGradient(cx,cy,0,cx,cy,r1*0.22);
+    g2.addColorStop(0,hex2a(colors[(i+2)%colors.length],0.5));g2.addColorStop(1,hex2a(colors[(i+2)%colors.length],0));
+    ctx.fillStyle=g2;ctx.fillRect(0,0,w,h);
+  }
+}
+function renderMesh(ctx,w,h,colors,rnd){
+  ctx.fillStyle=colors[0];ctx.fillRect(0,0,w,h);
+  var pts=[[0,0],[w*0.5,0],[w,0],[0,h*0.5],[w*0.5,h*0.5],[w,h*0.5],[0,h],[w*0.5,h],[w,h]];
+  var r=Math.sqrt(w*w+h*h)*0.55;
+  for(var i=0;i<pts.length;i++){
+    var cx=pts[i][0]+(rnd()-0.5)*w*0.25,cy=pts[i][1]+(rnd()-0.5)*h*0.25,col=colors[i%colors.length];
+    var gr=ctx.createRadialGradient(cx,cy,0,cx,cy,r*(0.8+rnd()*0.4));
+    gr.addColorStop(0,hex2a(col,0.78));gr.addColorStop(0.35,hex2a(col,0.45));gr.addColorStop(0.7,hex2a(col,0.12));gr.addColorStop(1,hex2a(col,0));
+    ctx.fillStyle=gr;ctx.fillRect(0,0,w,h);
+  }
+}
+function renderAurora(ctx,w,h,colors,rnd){
+  ctx.fillStyle=colors[0];ctx.fillRect(0,0,w,h);
+  for(var i=0;i<4;i++){
+    var yc=h*(0.15+i*0.22+rnd()*0.08),bh=h*(0.18+rnd()*0.15),col=colors[(i+1)%colors.length];
+    var gr=ctx.createLinearGradient(0,yc-bh,0,yc+bh);
+    gr.addColorStop(0,hex2a(col,0));gr.addColorStop(0.3,hex2a(col,0.2));gr.addColorStop(0.5,hex2a(col,0.6));gr.addColorStop(0.7,hex2a(col,0.2));gr.addColorStop(1,hex2a(col,0));
+    ctx.fillStyle=gr;ctx.save();ctx.transform(1,(rnd()-0.5)*0.08,0,1,0,0);ctx.fillRect(0,yc-bh,w,bh*2);ctx.restore();
+  }
+  var gd=ctx.createLinearGradient(0,0,w,h);
+  gd.addColorStop(0,hex2a(colors[1]||colors[0],0.38));gd.addColorStop(0.45,hex2a(colors[0],0));gd.addColorStop(1,hex2a(colors[2]||colors[0],0.3));
+  ctx.fillStyle=gd;ctx.fillRect(0,0,w,h);
+}
+function renderDiagonal(ctx,w,h,colors,rnd){
+  var gr=ctx.createLinearGradient(0,0,w,h);
+  for(var i=0;i<colors.length;i++)gr.addColorStop(i/(colors.length-1),colors[i]);
+  ctx.fillStyle=gr;ctx.fillRect(0,0,w,h);
+  for(var i=0;i<4;i++){
+    var cx=rnd()*w,cy=rnd()*h,r=Math.max(w,h)*(0.28+rnd()*0.26),col=colors[(i+2)%colors.length];
+    var sp=ctx.createRadialGradient(cx,cy,0,cx,cy,r);
+    sp.addColorStop(0,hex2a(col,0.48));sp.addColorStop(0.5,hex2a(col,0.2));sp.addColorStop(1,hex2a(col,0));
+    ctx.fillStyle=sp;ctx.fillRect(0,0,w,h);
+  }
+}
+var GRAD_FN={blob:renderBlob,mesh:renderMesh,aurora:renderAurora,diagonal:renderDiagonal};
+function paintBackground(ctx,w,h,bg){
+  if(bg.mode==='gradient'){
+    var colors=bg.applyBoost?bg.palette.map(function(c){return boostColor(c,bg.boost);}):bg.palette;
+    (GRAD_FN[bg.style]||renderBlob)(ctx,w,h,colors,seededRnd(bg.seed||0.5));
+  }else{ctx.fillStyle=bg.color;ctx.fillRect(0,0,w,h);}
+}
+function roundRectPath(ctx,x,y,w,h,r){
+  r=Math.max(0,Math.min(r,w/2,h/2));
+  ctx.beginPath();ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();
+}
+// Draws the photo into the frame with optional rounded corners, drop shadow and stroke.
+// 'mk' is a (w,h)->{canvas,ctx} factory so this works in the worker and on the main thread.
+function drawFramed(ctx,bitmap,dx,dy,dw,dh,o,mk){
+  var r=o.radius||0;
+  if(o.shadow>0){
+    ctx.save();
+    ctx.shadowColor='rgba(0,0,0,'+o.shadowAlpha+')';
+    ctx.shadowBlur=o.shadow;ctx.shadowOffsetX=0;ctx.shadowOffsetY=o.shadowOffsetY;
+  }
+  if(r>0){
+    var t=mk(Math.max(1,Math.round(dw)),Math.max(1,Math.round(dh)));
+    roundRectPath(t.ctx,0,0,Math.round(dw),Math.round(dh),r);t.ctx.clip();
+    t.ctx.drawImage(bitmap,0,0,Math.round(dw),Math.round(dh));
+    ctx.drawImage(t.canvas,dx,dy);
+  }else{
+    ctx.drawImage(bitmap,dx,dy,dw,dh);
+  }
+  if(o.shadow>0)ctx.restore();
+  if(o.stroke>0){
+    ctx.save();
+    roundRectPath(ctx,dx+o.stroke/2,dy+o.stroke/2,dw-o.stroke,dh-o.stroke,Math.max(0,r-o.stroke/2));
+    ctx.lineWidth=o.stroke;ctx.strokeStyle=o.strokeColor;ctx.stroke();ctx.restore();
+  }
+}
+// Given native W/H and target ratio, returns canvas size + image placement.
+function computeGeometry(W,H,ratio,fitMode,paddingPct){
+  var imgR=W/H,cW,cH,dx,dy,dw,dh;
+  if(fitMode==='fill'){
+    if(Math.abs(imgR-ratio)<0.001){cW=W;cH=H;}else if(imgR>ratio){cH=H;cW=Math.round(H*ratio);}else{cW=W;cH=Math.round(W/ratio);}
+    var p1=Math.round(Math.min(cW,cH)*paddingPct/100);
+    var iW=Math.max(1,cW-2*p1),iH=Math.max(1,cH-2*p1);
+    var sc=Math.max(iW/W,iH/H);dw=W*sc;dh=H*sc;dx=p1+(iW-dw)/2;dy=p1+(iH-dh)/2;
+  }else{
+    if(Math.abs(imgR-ratio)<0.001){cW=W;cH=H;}else if(imgR>ratio){cW=W;cH=Math.round(W/ratio);}else{cH=H;cW=Math.round(H*ratio);}
+    var p2=Math.round(Math.min(cW,cH)*paddingPct/100);cW+=2*p2;cH+=2*p2;dx=(cW-W)/2;dy=(cH-H)/2;dw=W;dh=H;
+  }
+  return{cW:cW,cH:cH,dx:dx,dy:dy,dw:dw,dh:dh};
+}
+// Translate the unit-free Frame sliders into pixel values for a given canvas.
+function frameStyle(g,cfg){
+  var minDim=Math.min(g.cW,g.cH);
+  return{
+    radius:(cfg.corner/100)*Math.min(g.dw,g.dh),
+    shadow:(cfg.shadow/100)*minDim*0.18,
+    shadowOffsetY:(cfg.shadow/100)*minDim*0.18*0.45,
+    shadowAlpha:Math.min(0.6,0.12+(cfg.shadow/100)*0.5),
+    stroke:(cfg.stroke/100)*minDim*0.06,
+    strokeColor:cfg.strokeColor
+  };
+}
+`;
+
+// ─── Evaluate engine on the main thread ───────────────────────────
+const _g = new Function(ENGINE + 'return {seededRnd,hexToRgb,rgbToHex,kMeans,boostColor,paintBackground,drawFramed,computeGeometry,frameStyle};')();
+const { seededRnd, hexToRgb, rgbToHex, kMeans, boostColor, paintBackground, drawFramed, computeGeometry, frameStyle } = _g;
+
+const DEFAULT_PAL = ['#0a0a14','#1a1a3a','#2a1a4a','#3a2a5a','#4a3a6a','#5a4a7a'];
+const PALETTE_SEED = 0.371;
+
+// Deterministic palette extraction. RAW colors (boost applied downstream so
+// the preview and the exported file always use identical inputs).
+const _paletteCache = new WeakMap();
+function getColors(bitmap) {
+  if (_paletteCache.has(bitmap)) return _paletteCache.get(bitmap);
+  const c = document.createElement('canvas'); c.width = c.height = 60;
+  const tc = c.getContext('2d'); tc.drawImage(bitmap, 0, 0, 60, 60);
+  const data = tc.getImageData(0, 0, 60, 60).data;
+  const pixels = [];
+  for (let i = 0; i < data.length; i += 8) if (data[i+3] > 170) pixels.push([data[i], data[i+1], data[i+2]]);
+  const pal = pixels.length < 6
+    ? DEFAULT_PAL.slice()
+    : kMeans(pixels, Math.min(6, pixels.length), seededRnd(PALETTE_SEED))
+        .sort((a,b)=>(a[0]+a[1]+a[2])-(b[0]+b[1]+b[2])).map(c=>rgbToHex(c[0],c[1],c[2]));
+  _paletteCache.set(bitmap, pal);
+  return pal;
+}
+
+// A canvas factory the engine can call for the rounded-corner sprite.
+const mkCanvas = (typeof OffscreenCanvas !== 'undefined')
+  ? (w,h)=>{ const cv=new OffscreenCanvas(w,h); return { canvas:cv, ctx:cv.getContext('2d') }; }
+  : (w,h)=>{ const cv=document.createElement('canvas'); cv.width=w; cv.height=h; return { canvas:cv, ctx:cv.getContext('2d') }; };
+
+// ─── Worker source ────────────────────────────────────────────────
+const WORKER_SRC = ENGINE + `
+function extractPalette(bitmap){
+  try{
+    var tmp=new OffscreenCanvas(60,60),tc=tmp.getContext('2d');
+    tc.drawImage(bitmap,0,0,60,60);var data=tc.getImageData(0,0,60,60).data;
+    var pixels=[];
+    for(var i=0;i<data.length;i+=8)if(data[i+3]>170)pixels.push([data[i],data[i+1],data[i+2]]);
+    if(pixels.length<6)return['#0a0a14','#1a1a3a','#2a1a4a','#3a2a5a','#4a3a6a','#5a4a7a'];
+    var clusters=kMeans(pixels,Math.min(6,pixels.length),seededRnd(0.371));
+    clusters.sort(function(a,b){return(a[0]+a[1]+a[2])-(b[0]+b[1]+b[2]);});
+    return clusters.map(function(c){return rgbToHex(c[0],c[1],c[2]);});
+  }catch(e){return['#0a0a14','#1a1a3a','#2a1a4a','#3a2a5a','#4a3a6a','#5a4a7a'];}
+}
+function mk(w,h){var cv=new OffscreenCanvas(w,h);return{canvas:cv,ctx:cv.getContext('2d')};}
+self.onmessage=function(e){
+  var d=e.data,id=d.id;
+  try{
+    var blob=new Blob([d.arrayBuffer],{type:d.mimeType||'image/jpeg'});
+    createImageBitmap(blob).then(function(bitmap){
+      try{
+        var g=computeGeometry(bitmap.width,bitmap.height,d.ratio,d.fitMode,d.padding);
+        // Optional longest-edge cap for web-friendly output.
+        var longest=Math.max(g.cW,g.cH);
+        if(d.maxSize&&longest>d.maxSize){var s=d.maxSize/longest;g.cW=Math.round(g.cW*s);g.cH=Math.round(g.cH*s);g.dx*=s;g.dy*=s;g.dw*=s;g.dh*=s;}
+        var canvas=new OffscreenCanvas(g.cW,g.cH),ctx=canvas.getContext('2d');
+        var palette=(d.palette&&d.palette.length)?d.palette:extractPalette(bitmap);
+        paintBackground(ctx,g.cW,g.cH,{mode:d.bgMode,color:d.bgColor,style:d.gradStyle,seed:d.gradSeed,palette:palette,applyBoost:d.applyBoost,boost:d.gradBoost});
+        drawFramed(ctx,bitmap,g.dx,g.dy,g.dw,g.dh,frameStyle(g,{corner:d.corner,shadow:d.shadow,stroke:d.stroke,strokeColor:d.strokeColor}),mk);
+        bitmap.close();
+        var type=d.format==='PNG'?'image/png':'image/jpeg';
+        canvas.convertToBlob(d.format==='PNG'?{type:type}:{type:type,quality:d.jpegQuality||0.92}).then(function(outBlob){
+          outBlob.arrayBuffer().then(function(buf){
+            self.postMessage({id:id,success:true,buffer:buf,mimeType:outBlob.type,outW:g.cW,outH:g.cH},[buf]);
+          });
+        }).catch(function(err){self.postMessage({id:id,success:false,error:'Export: '+err.message});});
+      }catch(err){self.postMessage({id:id,success:false,error:'Draw: '+err.message});}
+    }).catch(function(err){self.postMessage({id:id,success:false,error:'Could not decode (HEIC/RAW may be unsupported)'});});
+  }catch(err){self.postMessage({id:id,success:false,error:'Worker: '+err.message});}
+};
+`;
+
+let _workerUrl = null;
+const getWorkerUrl = () => {
+  if (!_workerUrl) _workerUrl = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'application/javascript' }));
+  return _workerUrl;
+};
+
+let _id = 0;
+const fmtSize = b => b < 1048576 ? (b/1024).toFixed(0)+' KB' : (b/1048576).toFixed(1)+' MB';
+function dl(blob, name) {
+  const url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = name; document.body.appendChild(a); a.click();
+  document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// ─── Reducer ──────────────────────────────────────────────────────
+function reducer(state, action) {
+  switch (action.type) {
+    case 'ADD': return { ...state, images: [...state.images, ...action.payload] };
+    case 'REMOVE': {
+      const img = state.images.find(i => i.id === action.id);
+      if (img?.bitmap) { try { img.bitmap.close(); } catch(e){} }
+      return { ...state, images: state.images.filter(i => i.id !== action.id) };
+    }
+    case 'UPDATE': return { ...state, images: state.images.map(i => i.id === action.id ? { ...i, ...action.payload } : i) };
+    case 'RESET_DONE': return { ...state, images: state.images.map(i =>
+      (i.status === 'done' || i.status === 'error') ? { ...i, status:'idle', outputBlob:null, outputSize:null, outDims:null, errorMsg:null } : i
+    )};
+    case 'CLEAR': {
+      state.images.forEach(i => { if (i.bitmap) try { i.bitmap.close(); } catch(e){} });
+      return { images: [] };
+    }
+    default: return state;
+  }
+}
+
+// ─── Tokens ───────────────────────────────────────────────────────
+const C = {
+  bg:'#111', surf:'#1C1C1C', surf2:'#161616',
+  br:'rgba(255,255,255,0.09)', br2:'rgba(255,255,255,0.15)',
+  text:'#EDE8DE', dim:'#C8C0B4', mute:'#888', ghost:'#444',
+  green:'#4ADE80', blue:'#60A5FA', red:'#F87171',
+};
+
+// ─── Atoms ────────────────────────────────────────────────────────
+const Lbl = ({ children }) => h('span', { style:{ fontSize:10, color:C.mute, letterSpacing:'0.14em', textTransform:'uppercase', fontWeight:500, userSelect:'none' }}, children);
+
+function Pill({ active, onClick, children }) {
+  return h('button', { onClick, style:{
+    padding:'5px 12px', borderRadius:99, flexShrink:0,
+    border:`1px solid ${active ? C.text : 'rgba(255,255,255,0.12)'}`,
+    background: active ? C.text : 'transparent',
+    color: active ? '#111' : C.mute,
+    fontSize:11, letterSpacing:'0.04em', fontWeight:active?500:300,
+    transition:'all 120ms ease-out', minHeight:32,
+  }}, children);
+}
+
+function Btn({ children, onClick, disabled, primary, sm }) {
+  return h('button', { onClick: disabled ? undefined : onClick, style:{
+    padding: sm ? '6px 13px' : '10px 20px', borderRadius:7,
+    border: `1px solid ${primary&&!disabled ? C.text : disabled ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.12)'}`,
+    background: primary&&!disabled ? C.text : 'transparent',
+    color: primary&&!disabled ? '#111' : disabled ? C.ghost : C.mute,
+    fontSize:11, letterSpacing:'0.06em', transition:'all 120ms',
+    whiteSpace:'nowrap', minHeight:sm?30:40, opacity:disabled?.3:1,
+  }}, children);
+}
+
+const Spin = ({ color, size=8 }) => h('span', { style:{ display:'inline-block', width:size, height:size, borderRadius:'50%', flexShrink:0, border:`1.5px solid ${color}20`, borderTop:`1.5px solid ${color}`, animation:'spin 0.7s linear infinite' }});
+
+// Reusable labelled slider to keep the controls DRY.
+function Slider({ label, value, min, max, step, onChange, width=110 }) {
+  return h('div', { className:'ctrl-item', style:{ padding:0 }},
+    h(Lbl, null, label),
+    h('input', { type:'range', min, max, step:step||1, value, onChange:e=>onChange(+e.target.value), style:{ width }})
+  );
+}
+
+function Swatch({ value, onChange, size=28 }) {
+  return h('div', { style:{ width:size, height:size, borderRadius:6, border:`1px solid ${C.br2}`, overflow:'hidden', position:'relative', cursor:'pointer', flexShrink:0 }},
+    h('div', { style:{ position:'absolute', inset:0, background:value }}),
+    h('input', { type:'color', value, onChange:e=>onChange(e.target.value), style:{ position:'absolute', inset:'-6px', width:'calc(100% + 12px)', height:'calc(100% + 12px)', opacity:0, cursor:'pointer' }})
+  );
+}
+
+function Badge({ status }) {
+  const m = { idle:{c:'rgba(255,255,255,.22)',l:'IDLE'}, processing:{c:C.blue,l:'PROCESSING'}, done:{c:C.green,l:'DONE'}, error:{c:C.red,l:'ERROR'} };
+  const { c, l } = m[status] || m.idle;
+  return h('span', { style:{ display:'flex', alignItems:'center', gap:5, fontSize:9, color:c, letterSpacing:'0.12em' }},
+    status === 'processing' ? h(Spin, { color:c, size:7 }) : h('span', { style:{ width:5, height:5, borderRadius:'50%', background:c, flexShrink:0 }}),
+    l
+  );
+}
+
+// ─── Live Preview Canvas (shares the exact engine the worker uses) ──
+function PreviewCanvas({ img, cfg, size=80, onClick }) {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !img.bitmap) return;
+    const bitmap = img.bitmap;
+    const ratio = cfg.ratio;
+    const cW = ratio >= 1 ? size : Math.round(size * ratio);
+    const cH = ratio >= 1 ? Math.round(size / ratio) : size;
+    canvas.width = cW; canvas.height = cH;
+    const ctx = canvas.getContext('2d');
+
+    // Mirror the worker's geometry at preview scale.
+    const fullG = computeGeometry(bitmap.width, bitmap.height, ratio, cfg.fitMode, cfg.padding);
+    const s = Math.min(cW/fullG.cW, cH/fullG.cH);
+    const g = { cW, cH, dx:fullG.dx*s, dy:fullG.dy*s, dw:fullG.dw*s, dh:fullG.dh*s };
+
+    const rawPal = cfg.bgMode === 'gradient'
+      ? (cfg.gradSource === 'custom' ? rampUnit(cfg.gradColors) : getColors(bitmap))
+      : DEFAULT_PAL;
+
+    paintBackground(ctx, cW, cH, {
+      mode: cfg.bgMode, color: cfg.bgColor, style: cfg.gradStyle, seed: cfg.gradSeed,
+      palette: rawPal, applyBoost: cfg.gradSource === 'auto', boost: cfg.gradBoost,
+    });
+    drawFramed(ctx, bitmap, g.dx, g.dy, g.dw, g.dh,
+      frameStyle(g, { corner:cfg.corner, shadow:cfg.shadow, stroke:cfg.stroke, strokeColor:cfg.strokeColor }), mkCanvas);
+  }, [img.bitmap, cfg.ratio, cfg.bgColor, cfg.padding, cfg.fitMode, cfg.bgMode, cfg.gradStyle, cfg.gradSeed, cfg.gradBoost, cfg.gradSource, JSON.stringify(cfg.gradColors), cfg.corner, cfg.shadow, cfg.stroke, cfg.strokeColor, size]);
+
+  const box = size + 8;
+  return h('div', {
+    onClick,
+    style:{ width:box, height:box, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center', borderRadius:8, background:'#0D0D0D', border:`1px solid ${C.br}`, overflow:'hidden', cursor:onClick?'zoom-in':'default' }
+  },
+    img.bitmap
+      ? h('canvas', { ref:canvasRef, style:{ display:'block', maxWidth:size+'px', maxHeight:size+'px', borderRadius:3 }})
+      : h('img', { src:img.previewUrl, alt:'', style:{ maxWidth:'80%', maxHeight:'80%', objectFit:'contain', display:'block', opacity:0.25 }})
+  );
+}
+
+// Build a 6-stop raw palette from up to 3 custom colors (mirrors engine rampPalette).
+function rampUnit(cols){
+  cols = (cols||[]).filter(c=>/^#[0-9a-fA-F]{6}$/.test(c));
+  if(!cols.length) return DEFAULT_PAL.slice();
+  if(cols.length>=6) return cols.slice(0,6);
+  const out=[], n=6;
+  for(let i=0;i<n;i++){ const t=i/(n-1)*(cols.length-1), a=Math.floor(t), b=Math.min(cols.length-1,a+1), f=t-a;
+    const A=hexToRgb(cols[a]), B=hexToRgb(cols[b]);
+    out.push(rgbToHex(A[0]+(B[0]-A[0])*f, A[1]+(B[1]-A[1])*f, A[2]+(B[2]-A[2])*f));
+  }
+  return out;
+}
+
+// ─── ImageCard ────────────────────────────────────────────────────
+function ImageCard({ img, cfg, onDownload, onProcess, onRemove, onZoom }) {
+  return h('div', { style:{ background:C.surf, border:`1px solid ${C.br}`, borderRadius:10, padding:'12px', display:'flex', gap:12, alignItems:'center', animation:'cardIn 200ms ease-out' }},
+    h(PreviewCanvas, { img, cfg, onClick:()=>onZoom(img) }),
+    h('div', { style:{ flex:1, minWidth:0, display:'flex', flexDirection:'column', gap:5 }},
+      h('div', { style:{ display:'flex', alignItems:'flex-start', gap:6 }},
+        h('p', { style:{ flex:1, fontSize:12, color:C.dim, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', lineHeight:1.3 }}, img.name),
+        h('button', { onClick:onRemove, style:{ background:'none', border:'none', color:C.ghost, fontSize:18, lineHeight:1, padding:'0 0 0 4px', flexShrink:0 }}, '×')
+      ),
+      h('p', { style:{ fontSize:10, color:C.ghost, letterSpacing:'0.04em' }},
+        img.originalSize,
+        img.outputSize && h('span', { style:{ color:C.green }}, ' → '+img.outputSize),
+        img.outDims && h('span', { style:{ color:C.ghost }}, '  '+img.outDims)
+      ),
+      img.errorMsg && h('p', { style:{ fontSize:9, color:C.red }}, img.errorMsg),
+      h('div', { style:{ display:'flex', alignItems:'center', gap:8, marginTop:2 }},
+        h(Badge, { status:img.status }),
+        h('div', { style:{ marginLeft:'auto' }},
+          img.status === 'done' && h('button', { onClick:onDownload, style:{ padding:'4px 11px', borderRadius:6, border:`1px solid ${C.green}35`, background:`${C.green}12`, color:C.green, fontSize:10, letterSpacing:'0.06em', minHeight:28 }}, '↓ Save'),
+          (img.status === 'idle' || img.status === 'error') && h('button', { onClick:onProcess, style:{ padding:'4px 11px', borderRadius:6, border:'1px solid rgba(255,255,255,0.11)', background:'transparent', color:C.mute, fontSize:10, letterSpacing:'0.06em', minHeight:28 }}, 'Process')
+        )
+      )
+    )
+  );
+}
+
+// ─── App ──────────────────────────────────────────────────────────
+const RATIOS   = [{l:'9:16',v:0.5625},{l:'4:5',v:0.8},{l:'1:1',v:1.0},{l:'5:4',v:1.25},{l:'1.91:1',v:1.9099},{l:'16:9',v:1.7778}];
+const GSTYLES  = [{l:'Blobs',v:'blob'},{l:'Mesh',v:'mesh'},{l:'Aurora',v:'aurora'},{l:'Diagonal',v:'diagonal'}];
+const PALETTES = [
+  {l:'Sunset', c:['#2a1a3a','#a04a5a','#f0a060']},
+  {l:'Ocean',  c:['#0a1a2a','#1a5a7a','#5ad0e0']},
+  {l:'Forest', c:['#0f1a10','#2a5a35','#a8c060']},
+  {l:'Mono',   c:['#0d0d0d','#444444','#e8e8e8']},
+  {l:'Plum',   c:['#1a0f2a','#5a2a6a','#d090c0']},
+];
+const MAXES = [{l:'Original',v:0},{l:'1080',v:1080},{l:'2048',v:2048},{l:'4096',v:4096}];
+
+const SAVED = (()=>{ try { return JSON.parse(localStorage.getItem('wf_v9')||'{}'); } catch(e){ return {}; } })();
+const sv = (k,d)=> SAVED[k]!==undefined ? SAVED[k] : d;
+
+function App() {
+  const [state,    dispatch]    = useReducer(reducer, { images:[] });
+  const [ratio,    setRatio]    = useState(()=>sv('ratio',1.0));
+  const [customW,  setCustomW]  = useState(()=>sv('customW',4));
+  const [customH,  setCustomH]  = useState(()=>sv('customH',5));
+  const [ratioMode,setRatioMode]= useState(()=>sv('ratioMode','preset')); // preset | custom
+  const [bgColor,  setBgColor]  = useState(()=>sv('bgColor','#F5F0E8'));
+  const [padding,  setPadding]  = useState(()=>sv('padding',0));
+  const [format,   setFormat]   = useState(()=>sv('format','PNG'));
+  const [fitMode,  setFitMode]  = useState(()=>sv('fitMode','fit'));
+  const [bgMode,   setBgMode]   = useState(()=>sv('bgMode','color'));
+  const [gradStyle,setGradStyle]= useState(()=>sv('gradStyle','blob'));
+  const [gradSeed, setGradSeed] = useState(()=>sv('gradSeed',0.42));
+  const [gradBoost,setGradBoost]= useState(()=>sv('gradBoost',1.8));
+  const [gradSource,setGradSource]=useState(()=>sv('gradSource','auto'));
+  const [gradColors,setGradColors]=useState(()=>sv('gradColors',['#2a1a3a','#a04a5a','#f0a060']));
+  const [corner,   setCorner]   = useState(()=>sv('corner',0));
+  const [shadow,   setShadow]   = useState(()=>sv('shadow',0));
+  const [stroke,   setStroke]   = useState(()=>sv('stroke',0));
+  const [strokeColor,setStrokeColor]=useState(()=>sv('strokeColor','#ffffff'));
+  const [maxSize,  setMaxSize]  = useState(()=>sv('maxSize',0));
+  const [suffix,   setSuffix]   = useState(()=>sv('suffix','whiteframe'));
+  const [autoProc, setAutoProc] = useState(()=>sv('autoProc',false));
+  const [jpegQ,    setJpegQ]    = useState(()=>sv('jpegQ',0.92));
+  const [dragging, setDragging] = useState(false);
+  const [zoom,     setZoom]     = useState(null); // image being previewed large
+  const workersRef = useRef([]);
+  const queueRef   = useRef([]);
+  const freeRef    = useRef([]);
+  const inited     = useRef(false);
+
+  const effRatio = ratioMode==='custom' ? (customW>0&&customH>0 ? customW/customH : 1) : ratio;
+
+  // Worker pool — process the batch in parallel across CPU cores.
+  useEffect(() => {
+    const n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency||4) - 1));
+    const pump = () => {
+      while (freeRef.current.length && queueRef.current.length) {
+        const w = freeRef.current.shift();
+        const job = queueRef.current.shift();
+        w._busy = job.id;
+        w.postMessage(job.msg, [job.msg.arrayBuffer]);
+      }
+    };
+    for (let i = 0; i < n; i++) {
+      const w = new Worker(getWorkerUrl());
+      w.onmessage = ({ data }) => {
+        if (data.success) {
+          const blob = new Blob([data.buffer], { type:data.mimeType });
+          dispatch({ type:'UPDATE', id:data.id, payload:{ status:'done', outputBlob:blob, outputSize:fmtSize(blob.size), outDims:`${data.outW}×${data.outH}` }});
+        } else {
+          dispatch({ type:'UPDATE', id:data.id, payload:{ status:'error', errorMsg:data.error||'Failed' }});
+        }
+        w._busy = null;
+        freeRef.current.push(w);
+        pump();
+      };
+      workersRef.current.push(w);
+      freeRef.current.push(w);
+    }
+    workersRef.current._pump = pump;
+    return () => { workersRef.current.forEach(w => w.terminate()); workersRef.current = []; freeRef.current = []; queueRef.current = []; };
+  }, []);
+
+  // Persist settings across reloads.
+  useEffect(() => {
+    try {
+      localStorage.setItem('wf_v9', JSON.stringify({ ratio, customW, customH, ratioMode, bgColor, padding, format, fitMode, bgMode, gradStyle, gradSeed, gradBoost, gradSource, gradColors, corner, shadow, stroke, strokeColor, maxSize, suffix, autoProc, jpegQ }));
+    } catch(e) {}
+  }, [ratio, customW, customH, ratioMode, bgColor, padding, format, fitMode, bgMode, gradStyle, gradSeed, gradBoost, gradSource, gradColors, corner, shadow, stroke, strokeColor, maxSize, suffix, autoProc, jpegQ]);
+
+  // Any visual change invalidates already-rendered outputs.
+  useEffect(() => {
+    if (!inited.current) { inited.current = true; return; }
+    if (state.images.length > 0) dispatch({ type:'RESET_DONE' });
+  }, [effRatio, bgColor, padding, format, fitMode, bgMode, gradStyle, gradSeed, gradBoost, gradSource, JSON.stringify(gradColors), corner, shadow, stroke, strokeColor, maxSize, jpegQ]);
+
+  const buildMsg = useCallback((img, buf) => {
+    const palette = (bgMode === 'gradient')
+      ? (gradSource === 'custom' ? rampUnit(gradColors) : (img.bitmap ? getColors(img.bitmap) : null))
+      : null;
+    return { id:img.id, arrayBuffer:buf, mimeType:img.file.type, ratio:effRatio, bgColor, padding, format, fitMode, bgMode,
+      gradStyle, gradSeed, gradBoost, applyBoost:(gradSource==='auto'), palette,
+      corner, shadow, stroke, strokeColor, maxSize, jpegQuality:jpegQ };
+  }, [effRatio, bgColor, padding, format, fitMode, bgMode, gradStyle, gradSeed, gradBoost, gradSource, gradColors, corner, shadow, stroke, strokeColor, maxSize, jpegQ]);
+
+  const enqueue = useCallback(async (img) => {
+    if (img.status === 'processing') return;
+    dispatch({ type:'UPDATE', id:img.id, payload:{ status:'processing', errorMsg:null }});
+    try {
+      const buf = await img.file.arrayBuffer();
+      queueRef.current.push({ id:img.id, msg:buildMsg(img, buf) });
+      workersRef.current._pump && workersRef.current._pump();
+    } catch(e) {
+      dispatch({ type:'UPDATE', id:img.id, payload:{ status:'error', errorMsg:e.message }});
+    }
+  }, [buildMsg]);
+
+  const addFiles = useCallback((files) => {
+    const items = Array.from(files).map(f => ({
+      id:++_id, file:f, name:f.name, originalSize:fmtSize(f.size),
+      status:'idle', outputBlob:null, outputSize:null, outDims:null,
+      previewUrl:URL.createObjectURL(f), errorMsg:null, bitmap:null,
+    }));
+    dispatch({ type:'ADD', payload:items });
+    items.forEach(async item => {
+      try {
+        const bitmap = await createImageBitmap(item.file);
+        dispatch({ type:'UPDATE', id:item.id, payload:{ bitmap }});
+        if (autoProc) enqueue({ ...item, bitmap });
+      } catch(e) {
+        dispatch({ type:'UPDATE', id:item.id, payload:{ status:'error', errorMsg:'Preview unavailable (HEIC/RAW?)' }});
+      }
+    });
+  }, [autoProc, enqueue]);
+
+  const processAll = useCallback(() => {
+    state.images.filter(i=>i.status==='idle'||i.status==='error').forEach(i=>enqueue(i));
+  }, [state.images, enqueue]);
+
+  const downloadImg = useCallback((img) => {
+    if (!img.outputBlob) return;
+    const ext = format==='PNG'?'png':'jpg';
+    dl(img.outputBlob, img.name.replace(/\.[^.]+$/, '') + (suffix?('_'+suffix):'') + '.' + ext);
+  }, [format, suffix]);
+
+  const downloadZip = useCallback(async () => {
+    if (!window.JSZip) return;
+    const done = state.images.filter(i=>i.status==='done'&&i.outputBlob);
+    if (!done.length) return;
+    const zip = new window.JSZip(), seen = {};
+    const ext = format==='PNG'?'png':'jpg';
+    done.forEach(img => {
+      let base = img.name.replace(/\.[^.]+$/,'') + (suffix?('_'+suffix):'') + '.' + ext;
+      if (seen[base]!==undefined){const n=++seen[base];base=base.replace('.'+ext,'_'+n+'.'+ext);}else seen[base]=0;
+      zip.file(base, img.outputBlob);
+    });
+    dl(await zip.generateAsync({type:'blob'}), 'whiteframe_batch.zip');
+  }, [state.images, format, suffix]);
+
+  const clearAll = useCallback(() => {
+    state.images.forEach(i => URL.revokeObjectURL(i.previewUrl));
+    dispatch({ type:'CLEAR' });
+  }, [state.images]);
+
+  // Keyboard shortcuts: ⌘/Ctrl+Enter = Process All, ⌘/Ctrl+S = ZIP.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key === 'Enter') { e.preventDefault(); processAll(); }
+      else if (e.key.toLowerCase() === 's') { e.preventDefault(); downloadZip(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [processAll, downloadZip]);
+
+  const { images } = state;
+  const hasImages = images.length > 0;
+  const idleN  = images.filter(i=>i.status==='idle'||i.status==='error').length;
+  const doneN  = images.filter(i=>i.status==='done').length;
+  const procN  = images.filter(i=>i.status==='processing').length;
+  const msg = procN>0 ? `Processing ${doneN}/${images.length}…`
+            : hasImages&&doneN===images.length ? `All ${images.length} ready`
+            : doneN>0 ? `${doneN}/${images.length} done` : '';
+
+  const cfg = { ratio:effRatio, bgColor, padding, fitMode, bgMode, gradStyle, gradSeed, gradBoost, gradSource, gradColors, corner, shadow, stroke, strokeColor };
+
+  const setColorAt = (i, v) => setGradColors(cs => cs.map((c,idx)=>idx===i?v:c));
+
+  return h('div', { style:{ height:'100dvh', background:C.bg, color:C.text, fontFamily:"'DM Mono',monospace", display:'flex', flexDirection:'column', overflow:'hidden' }},
+
+    // ── Header
+    h('header', { style:{ padding:'14px 20px', borderBottom:`1px solid ${C.br}`, display:'flex', alignItems:'center', gap:12, flexShrink:0 }},
+      h('h1', { style:{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:400, letterSpacing:'-0.3px', lineHeight:1, userSelect:'none' }},
+        'White', h('strong', null, 'Frame'),
+        h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:9, color:C.ghost, letterSpacing:'0.12em', marginLeft:7, fontWeight:300, verticalAlign:'middle' }}, 'v9')
+      ),
+      h('div', { style:{ flex:1 }}),
+      msg && h('div', { style:{ display:'flex', alignItems:'center', gap:6, padding:'5px 11px', borderRadius:99, background:procN>0?`${C.blue}15`:`${C.green}15`, border:`1px solid ${procN>0?C.blue:C.green}30`, fontSize:10, color:procN>0?C.blue:C.green, letterSpacing:'0.06em', animation:procN>0?'pulse 1.4s ease-in-out infinite':'none' }},
+        procN > 0 && h(Spin, { color:C.blue, size:7 }),
+        msg
+      )
+    ),
+
+    // ── Controls
+    h('div', { style:{ background:C.surf2, borderBottom:`1px solid ${C.br}`, flexShrink:0, overflowX:'auto' }},
+      h('div', { className:'ctrl-scroll' },
+
+        // Ratio
+        h('div', { className:'ctrl-item' },
+          h(Lbl, null, 'Ratio'),
+          h('div', { style:{ display:'flex', gap:4, alignItems:'center', flexWrap:'wrap' }},
+            ...RATIOS.map(r => h(Pill, { key:r.v, active:ratioMode==='preset'&&ratio===r.v, onClick:()=>{setRatioMode('preset');setRatio(r.v);} }, r.l)),
+            h(Pill, { active:ratioMode==='custom', onClick:()=>setRatioMode('custom') }, 'Custom')
+          ),
+          ratioMode==='custom' && h('div', { style:{ display:'flex', gap:6, alignItems:'center', marginTop:2 }},
+            h('input', { type:'number', min:1, max:9999, value:customW, onChange:e=>setCustomW(Math.max(1,+e.target.value||1)), style:{ width:54 }}),
+            h('span', { style:{ color:C.mute }}, ':'),
+            h('input', { type:'number', min:1, max:9999, value:customH, onChange:e=>setCustomH(Math.max(1,+e.target.value||1)), style:{ width:54 }})
+          )
+        ),
+        h('div', { className:'ctrl-div' }),
+
+        // Mode
+        h('div', { className:'ctrl-item' },
+          h(Lbl, null, 'Mode'),
+          h('div', { style:{ display:'flex', gap:4 }},
+            h(Pill, { active:fitMode==='fit',  onClick:()=>setFitMode('fit')  }, 'Fit'),
+            h(Pill, { active:fitMode==='fill', onClick:()=>setFitMode('fill') }, 'Fill & Crop')
+          )
+        ),
+        h('div', { className:'ctrl-div' }),
+
+        // Background
+        h('div', { className:'ctrl-item' },
+          h(Lbl, null, 'Background'),
+          h('div', { style:{ display:'flex', gap:4, marginBottom:8 }},
+            h(Pill, { active:bgMode==='color',    onClick:()=>setBgMode('color')    }, 'Color'),
+            h(Pill, { active:bgMode==='gradient', onClick:()=>setBgMode('gradient') }, 'Gradient')
+          ),
+          bgMode === 'color' && h('div', { style:{ display:'flex', alignItems:'center', gap:10 }},
+            h(Swatch, { value:bgColor, onChange:setBgColor, size:32 }),
+            h('span', { style:{ fontSize:11, color:C.mute, letterSpacing:'0.06em' }}, bgColor.toUpperCase())
+          ),
+          bgMode === 'gradient' && h('div', { style:{ display:'flex', flexDirection:'column', gap:8 }},
+            h('div', { style:{ display:'flex', gap:4, flexWrap:'wrap' }},
+              ...GSTYLES.map(g => h(Pill, { key:g.v, active:gradStyle===g.v, onClick:()=>setGradStyle(g.v) }, g.l))
+            ),
+            h('div', { style:{ display:'flex', gap:4 }},
+              h(Pill, { active:gradSource==='auto',   onClick:()=>setGradSource('auto')   }, 'From image'),
+              h(Pill, { active:gradSource==='custom', onClick:()=>setGradSource('custom') }, 'Custom')
+            ),
+            gradSource==='custom' && h('div', { style:{ display:'flex', flexDirection:'column', gap:6 }},
+              h('div', { style:{ display:'flex', gap:6, alignItems:'center' }},
+                ...gradColors.map((c,i)=>h(Swatch, { key:i, value:c, onChange:v=>setColorAt(i,v) }))
+              ),
+              h('div', { style:{ display:'flex', gap:4, flexWrap:'wrap' }},
+                ...PALETTES.map(p => h('button', { key:p.l, onClick:()=>setGradColors(p.c.slice()),
+                  style:{ padding:'4px 9px', borderRadius:99, border:'1px solid rgba(255,255,255,0.12)', background:'transparent', color:C.mute, fontSize:9, letterSpacing:'0.04em' }}, p.l))
+              )
+            ),
+            h('div', { style:{ display:'flex', gap:8, alignItems:'center' }},
+              h('button', {
+                onClick: () => setGradSeed(Math.random()),
+                style:{ padding:'5px 12px', borderRadius:6, border:'1px solid rgba(255,255,255,0.13)', background:'transparent', color:C.mute, fontSize:10, letterSpacing:'0.08em', display:'flex', alignItems:'center', gap:6, width:'fit-content' }
+              }, h('span', { style:{ fontSize:14, lineHeight:1 }}, '↻'), ' Shuffle layout')
+            ),
+            gradSource==='auto' && h('div', { style:{ display:'flex', flexDirection:'column', gap:4, marginTop:2 }},
+              h(Lbl, null, `Intensity — ${gradBoost.toFixed(1)}×`),
+              h('input', { type:'range', min:0.5, max:3.5, step:0.1, value:gradBoost, onChange:e=>setGradBoost(+e.target.value), style:{ width:110 }})
+            )
+          )
+        ),
+        h('div', { className:'ctrl-div' }),
+
+        // Frame — NEW in v9
+        h('div', { className:'ctrl-item', style:{ gap:12 }},
+          h(Lbl, null, 'Frame'),
+          h(Slider, { label:`Corners — ${corner}%`, value:corner, min:0, max:25, onChange:setCorner }),
+          h(Slider, { label:`Shadow — ${shadow}`, value:shadow, min:0, max:100, onChange:setShadow }),
+          h('div', { className:'ctrl-item', style:{ padding:0 }},
+            h(Lbl, null, `Border — ${stroke}`),
+            h('div', { style:{ display:'flex', gap:8, alignItems:'center' }},
+              h('input', { type:'range', min:0, max:10, step:0.5, value:stroke, onChange:e=>setStroke(+e.target.value), style:{ width:78 }}),
+              stroke>0 && h(Swatch, { value:strokeColor, onChange:setStrokeColor, size:22 })
+            )
+          )
+        ),
+        h('div', { className:'ctrl-div' }),
+
+        // Padding
+        h('div', { className:'ctrl-item' },
+          h(Lbl, null, `Padding — ${padding}%`),
+          h('input', { type:'range', min:0, max:20, value:padding, onChange:e=>setPadding(+e.target.value), style:{ width:110 }})
+        ),
+        h('div', { className:'ctrl-div' }),
+
+        // Output
+        h('div', { className:'ctrl-item', style:{ gap:12 }},
+          h(Lbl, null, 'Output'),
+          h('div', { style:{ display:'flex', gap:4 }},
+            ...['PNG','JPEG'].map(f => h(Pill, { key:f, active:format===f, onClick:()=>setFormat(f) }, f))
+          ),
+          format === 'JPEG' && h('div', { className:'ctrl-item', style:{ padding:0 }},
+            h(Lbl, null, `Quality — ${Math.round(jpegQ*100)}%`),
+            h('input', { type:'range', min:0.5, max:1.0, step:0.01, value:jpegQ, onChange:e=>setJpegQ(+e.target.value), style:{ width:110 }})
+          ),
+          h('div', { className:'ctrl-item', style:{ padding:0 }},
+            h(Lbl, null, 'Max size'),
+            h('div', { style:{ display:'flex', gap:4 }},
+              ...MAXES.map(m => h(Pill, { key:m.v, active:maxSize===m.v, onClick:()=>setMaxSize(m.v) }, m.l))
+            )
+          ),
+          h('div', { className:'ctrl-item', style:{ padding:0 }},
+            h(Lbl, null, 'Filename suffix'),
+            h('div', { style:{ display:'flex', gap:6, alignItems:'center' }},
+              h('span', { style:{ fontSize:10, color:C.ghost }}, 'name_'),
+              h('input', { type:'text', value:suffix, onChange:e=>setSuffix(e.target.value.replace(/[^a-zA-Z0-9_-]/g,'')), style:{ width:96 }})
+            )
+          )
+        ),
+        h('div', { className:'ctrl-div' }),
+
+        // Auto-Process
+        h('div', { className:'ctrl-item' },
+          h(Lbl, null, 'Auto-Process'),
+          h('button', {
+            onClick: () => setAutoProc(v => !v),
+            style:{
+              padding:'5px 12px', borderRadius:99, flexShrink:0, width:'fit-content',
+              border:`1px solid ${autoProc ? C.green : 'rgba(255,255,255,0.12)'}`,
+              background: autoProc ? `${C.green}18` : 'transparent',
+              color: autoProc ? C.green : C.mute,
+              fontSize:11, letterSpacing:'0.04em', fontWeight:autoProc?500:300,
+              transition:'all 120ms ease-out', minHeight:32,
+            }
+          }, autoProc ? '⚡ On' : 'Off')
+        )
+      )
+    ),
+
+    // ── Main
+    h('div', { style:{ flex:1, overflowY:'auto', padding:'16px' }},
+      h('div', {
+        onDragOver:  e => { e.preventDefault(); setDragging(true); },
+        onDragLeave: () => setDragging(false),
+        onDrop:      e => { e.preventDefault(); setDragging(false); addFiles(e.dataTransfer.files); },
+        onClick:     () => document.getElementById('wf-input').click(),
+        style:{ border:`${dragging?'2px solid':'1px dashed'} ${dragging?C.text:'rgba(255,255,255,0.13)'}`, borderRadius:12, padding:'28px 20px', textAlign:'center', cursor:'pointer', background:dragging?'rgba(255,255,255,0.02)':'transparent', transition:'all 140ms', marginBottom:hasImages?12:0, userSelect:'none' }
+      },
+        h('input', { id:'wf-input', type:'file', multiple:true, accept:'image/*', style:{ display:'none' }, onChange:e=>addFiles(e.target.files) }),
+        h('div', { style:{ marginBottom:10, opacity:dragging?1:0.22, transition:'opacity 140ms' }},
+          h('svg', { width:26, height:26, viewBox:'0 0 24 24', fill:'none', stroke:C.text, strokeWidth:1.5, strokeLinecap:'round', strokeLinejoin:'round', style:{ display:'inline-block' }},
+            h('rect',{x:3,y:3,width:18,height:18,rx:2}), h('circle',{cx:8.5,cy:8.5,r:1.5}), h('polyline',{points:'21 15 16 10 5 21'})
+          )
+        ),
+        h('p', { style:{ fontSize:13, color:dragging?C.text:C.mute, transition:'color 140ms', letterSpacing:'0.02em', marginBottom:4 }},
+          dragging ? 'Drop to add' : 'Tap to browse or drop images'
+        ),
+        h('p', { style:{ fontSize:9, color:C.ghost, letterSpacing:'0.12em' }}, 'JPEG · PNG · WEBP · UNLIMITED BATCH')
+      ),
+      hasImages && h('div', { className:'grid' },
+        ...images.map(img => h(ImageCard, {
+          key: img.id, img, cfg,
+          onDownload: () => downloadImg(img),
+          onProcess:  () => enqueue(img),
+          onZoom:     () => setZoom(img),
+          onRemove:   () => { URL.revokeObjectURL(img.previewUrl); dispatch({ type:'REMOVE', id:img.id }); }
+        }))
+      )
+    ),
+
+    // ── Footer
+    h('div', { className:'footer' },
+      h('div', { style:{ display:'flex', gap:8, flexWrap:'wrap' }},
+        h(Btn, { primary:true, disabled:!hasImages||idleN===0, onClick:processAll }, idleN>0?`Process All (${idleN})`:'Process All'),
+        h(Btn, { disabled:doneN===0, onClick:downloadZip }, doneN>0?`Download ZIP (${doneN})`:'Download ZIP')
+      ),
+      h('div', { className:'footer-r' },
+        h('span', { style:{ fontSize:9, color:'rgba(255,255,255,0.1)', letterSpacing:'0.1em', userSelect:'none' }}, 'LOCAL · NO UPLOADS · ⌘⏎ PROCESS'),
+        hasImages && h(Btn, { sm:true, onClick:clearAll }, 'Clear')
+      )
+    ),
+
+    // ── Lightbox
+    zoom && h('div', { className:'lightbox', onClick:()=>setZoom(null) },
+      h('div', { onClick:e=>e.stopPropagation(), style:{ cursor:'default', display:'flex', flexDirection:'column', alignItems:'center', gap:10 }},
+        h(PreviewCanvas, { img:zoom, cfg, size:Math.min(560, Math.round((typeof window!=='undefined'?window.innerHeight:600)*0.72)) }),
+        h('span', { style:{ fontSize:10, color:C.mute, letterSpacing:'0.08em' }}, zoom.outDims ? `${zoom.name} · ${zoom.outDims}` : zoom.name)
+      )
+    )
+  );
+}
+
+createRoot(document.getElementById('root')).render(h(App));
+</script>
+</body>
+</html>
